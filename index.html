@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>T5 Attention Head Pruning — Rajneesh Babu</title>
+  <meta name="description" content="Gradient-based head importance and structured pruning on T5-small: scoring 144 attention heads, removing the least useful, and measuring what it costs in BLEU."/>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+  <style>
+    :root{
+      --bg:#0f172a; --bg2:#1e293b;
+      --border:rgba(255,255,255,0.08); --border2:rgba(255,255,255,0.14);
+      --text:#f1f5f9; --text2:#cbd5e1; --text3:#94a3b8; --text4:#64748b;
+      --accent:#34d399; --accent2:#10b981; --accent3:#059669;
+      --warn:#fb923c; --bad:#f87171;
+    }
+    *,*::before,*::after{margin:0;padding:0;box-sizing:border-box;}
+    html{scroll-behavior:smooth;}
+    body{background:var(--bg);color:var(--text);font-family:'Inter',system-ui,sans-serif;line-height:1.65;-webkit-font-smoothing:antialiased;}
+    .container{max-width:960px;margin:0 auto;padding:0 1.5rem;}
+    section{padding:4.5rem 0;}
+    .sec-alt{background:var(--bg2);}
+    code,.mono{font-family:'JetBrains Mono',ui-monospace,monospace;}
+    a{color:var(--accent);text-decoration:none;}
+    a:hover{text-decoration:underline;}
+    a:focus-visible{outline:2px solid var(--accent);outline-offset:3px;}
+    .reveal{opacity:0;transform:translateY(18px);transition:opacity .6s ease,transform .6s ease;}
+    .reveal.visible{opacity:1;transform:none;}
+    @media (prefers-reduced-motion:reduce){.reveal{opacity:1;transform:none;transition:none;}}
+
+    .hero{padding:6rem 0 4.5rem;background:linear-gradient(135deg,#0f172a 0%,#0f2b25 55%,#0f172a 100%);position:relative;overflow:hidden;}
+    .hero::before{content:'';position:absolute;inset:0;background:radial-gradient(ellipse 70% 60% at 62% 38%,rgba(52,211,153,.08),transparent);pointer-events:none;}
+    .hero .container{position:relative;}
+    .badge{display:inline-flex;align-items:center;gap:.5rem;background:rgba(52,211,153,.12);border:1px solid rgba(52,211,153,.3);color:var(--accent);font-size:.72rem;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;padding:.35rem 1rem;border-radius:99px;margin-bottom:1.5rem;}
+    .badge-dot{width:6px;height:6px;background:var(--accent);border-radius:50%;}
+    h1{font-size:clamp(2rem,5vw,3.4rem);font-weight:900;letter-spacing:-2px;line-height:1.05;margin-bottom:.75rem;}
+    .h1-main{background:linear-gradient(135deg,#34d399,#22d3ee);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;color:var(--accent);}
+    .h1-sub{display:block;color:var(--text2);font-size:clamp(1.15rem,2.5vw,1.8rem);font-weight:700;letter-spacing:-1px;}
+    .hero-desc{font-size:1rem;color:var(--text3);max-width:620px;margin-bottom:1.75rem;line-height:1.8;}
+    .hero-desc strong{color:var(--accent);font-weight:600;}
+    .hero-meta{display:flex;flex-wrap:wrap;gap:.5rem;margin-bottom:2.25rem;}
+    .meta-chip{font-size:.72rem;font-weight:600;padding:.3rem .85rem;border-radius:99px;background:rgba(52,211,153,.1);color:var(--accent);border:1px solid rgba(52,211,153,.22);}
+    .meta-chip.alt{background:rgba(148,163,184,.1);color:var(--text3);border-color:var(--border2);}
+    .cta-row{display:flex;flex-wrap:wrap;gap:.75rem;}
+    .btn{display:inline-flex;align-items:center;gap:.5rem;font-size:.85rem;font-weight:600;padding:.7rem 1.3rem;border-radius:10px;border:1px solid var(--border2);color:var(--text);transition:transform .15s ease,border-color .15s ease;}
+    .btn:hover{transform:translateY(-1px);border-color:var(--accent);text-decoration:none;}
+    .btn-primary{background:linear-gradient(135deg,var(--accent2),var(--accent3));border-color:transparent;color:#03211a;}
+
+    .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:1px;background:var(--border);border:1px solid var(--border);border-radius:14px;overflow:hidden;margin-top:3rem;}
+    .stat{background:var(--bg);padding:1.4rem 1.2rem;}
+    .stat-num{font-family:'JetBrains Mono',monospace;font-size:1.75rem;font-weight:500;color:var(--accent);line-height:1.1;}
+    .stat-label{font-size:.74rem;color:var(--text4);text-transform:uppercase;letter-spacing:.8px;margin-top:.35rem;}
+
+    .sec-head{margin-bottom:2.25rem;}
+    .eyebrow{font-family:'JetBrains Mono',monospace;font-size:.72rem;letter-spacing:2px;text-transform:uppercase;color:var(--accent);margin-bottom:.6rem;}
+    h2{font-size:clamp(1.5rem,3vw,2.1rem);font-weight:800;letter-spacing:-1px;line-height:1.2;}
+    .sec-head p{color:var(--text3);margin-top:.7rem;max-width:64ch;}
+
+    /* the headline comparison */
+    .versus{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--border);border:1px solid var(--border);border-radius:14px;overflow:hidden;}
+    .vs{background:var(--bg);padding:1.6rem 1.5rem;}
+    .sec-alt .vs{background:#16233b;}
+    .vs .label{font-size:.74rem;text-transform:uppercase;letter-spacing:.9px;color:var(--text4);margin-bottom:.5rem;}
+    .vs .big{font-family:'JetBrains Mono',monospace;font-size:2.4rem;font-weight:500;line-height:1;}
+    .vs.good .big{color:var(--accent);}
+    .vs.bad .big{color:var(--bad);}
+    .vs .sub{font-size:.85rem;color:var(--text3);margin-top:.5rem;}
+    @media (max-width:560px){.versus{grid-template-columns:1fr;}}
+
+    .table-wrap{overflow-x:auto;border:1px solid var(--border);border-radius:14px;}
+    table{width:100%;border-collapse:collapse;font-size:.86rem;min-width:540px;}
+    th,td{padding:.72rem 1rem;text-align:left;border-bottom:1px solid var(--border);}
+    th{background:rgba(148,163,184,.07);font-size:.72rem;letter-spacing:1px;text-transform:uppercase;color:var(--text4);font-weight:700;}
+    tbody tr:last-child td{border-bottom:none;}
+    td.num{font-family:'JetBrains Mono',monospace;color:var(--accent);font-variant-numeric:tabular-nums;}
+    td.dim{font-family:'JetBrains Mono',monospace;color:var(--text3);font-variant-numeric:tabular-nums;}
+    td.neg{font-family:'JetBrains Mono',monospace;color:var(--bad);font-variant-numeric:tabular-nums;}
+    td.quote{color:var(--text3);font-style:italic;}
+
+    .figs{display:grid;gap:1.75rem;}
+    figure{background:var(--bg);border:1px solid var(--border);border-radius:14px;overflow:hidden;}
+    .sec-alt figure{background:#16233b;}
+    figure img{display:block;width:100%;height:auto;background:#fff;}
+    figcaption{padding:.9rem 1.2rem;font-size:.85rem;color:var(--text3);border-top:1px solid var(--border);}
+    figcaption b{color:var(--text2);font-weight:600;}
+
+    .notes{display:grid;gap:.9rem;}
+    .note{background:var(--bg);border:1px solid var(--border);border-left:2px solid var(--accent3);border-radius:0 12px 12px 0;padding:1.05rem 1.3rem;}
+    .sec-alt .note{background:#16233b;}
+    .note h4{font-size:.95rem;font-weight:700;margin-bottom:.3rem;}
+    .note p{font-size:.88rem;color:var(--text3);}
+    .formula{display:block;font-family:'JetBrains Mono',monospace;font-size:.85rem;color:var(--text2);background:rgba(148,163,184,.08);border-left:2px solid var(--accent3);padding:.7rem .9rem;border-radius:0 6px 6px 0;margin:1rem 0;overflow-x:auto;}
+    ol.qs{list-style:none;counter-reset:q;display:grid;gap:.6rem;}
+    ol.qs li{counter-increment:q;position:relative;padding-left:2.4rem;color:var(--text2);font-size:.93rem;}
+    ol.qs li::before{content:counter(q,decimal-leading-zero);position:absolute;left:0;top:.05rem;font-family:'JetBrains Mono',monospace;font-size:.8rem;color:var(--accent);}
+
+    pre{background:#0b1220;border:1px solid var(--border);border-radius:12px;padding:1.1rem 1.3rem;overflow-x:auto;font-family:'JetBrains Mono',monospace;font-size:.83rem;color:var(--text2);line-height:1.7;}
+
+    footer{border-top:1px solid var(--border);padding:2.5rem 0 3.5rem;color:var(--text4);font-size:.85rem;}
+    .foot-links{display:flex;flex-wrap:wrap;gap:1.25rem;margin-top:.8rem;}
+  </style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="container">
+    <div class="badge"><span class="badge-dot"></span> M.Tech CDS · IISc Bengaluru</div>
+    <h1><span class="h1-main">Which Heads Does T5 Need?</span><span class="h1-sub">gradient-based importance and structured pruning</span></h1>
+    <p class="hero-desc">
+      T5-small has <strong>144 attention heads</strong> — encoder self-attention, decoder
+      self-attention, and the cross-attention joining them. They are not equally useful.
+      This scores every head by how much the loss depends on it, removes the least
+      important, and measures what that costs in BLEU — against the control that actually
+      matters, <strong>removing the same number at random</strong>.
+    </p>
+    <div class="hero-meta">
+      <span class="meta-chip">T5-small</span>
+      <span class="meta-chip">Michel et al. 2019</span>
+      <span class="meta-chip">Structured pruning</span>
+      <span class="meta-chip alt">BLEU from scratch</span>
+      <span class="meta-chip alt">CPU only</span>
+    </div>
+    <div class="cta-row">
+      <a class="btn btn-primary" href="t5_head_pruning.ipynb">Open the notebook</a>
+      <a class="btn" href="https://github.com/rajneeshbabu">GitHub</a>
+    </div>
+
+    <div class="stats">
+      <div class="stat"><div class="stat-num">144</div><div class="stat-label">heads scored</div></div>
+      <div class="stat"><div class="stat-num">20s</div><div class="stat-label">to score all of them</div></div>
+      <div class="stat"><div class="stat-num">60%</div><div class="stat-label">cross-attn removed</div></div>
+      <div class="stat"><div class="stat-num">91%</div><div class="stat-label">of BLEU retained</div></div>
+    </div>
+  </div>
+</header>
+
+<section>
+  <div class="container">
+    <div class="sec-head reveal">
+      <div class="eyebrow">The headline</div>
+      <h2>Same heads removed, wildly different outcome</h2>
+      <p>Cross-attention, 60% of heads switched off. The only difference between these two
+         numbers is <em>which</em> 29 heads were chosen.</p>
+    </div>
+
+    <div class="versus reveal">
+      <div class="vs good">
+        <div class="label">Chosen by importance</div>
+        <div class="big">91%</div>
+        <div class="sub">of baseline BLEU retained — 0.2305 against a 0.2534 baseline</div>
+      </div>
+      <div class="vs bad">
+        <div class="label">Chosen at random</div>
+        <div class="big">13%</div>
+        <div class="sub">BLEU collapses to 0.0323 with the same compute saved</div>
+      </div>
+    </div>
+
+    <div class="notes reveal" style="margin-top:1.75rem">
+      <div class="note">
+        <h4>And the row that does not flatter the method</h4>
+        <p>At 20% sparsity the ranking barely matters and random selection actually came out
+           <em>ahead</em> by 0.0097 BLEU. On 120 sentences that is inside the noise. The
+           scores only prove their worth once enough is removed that the choice matters —
+           the notebook reports that row rather than quietly dropping it.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="sec-alt">
+  <div class="container">
+    <div class="sec-head reveal">
+      <div class="eyebrow">Full results</div>
+      <h2>Importance against random, everywhere</h2>
+      <p>English→German on the Multi30k 2016 test set. Baseline BLEU 0.2534.</p>
+    </div>
+
+    <div class="table-wrap reveal">
+      <table>
+        <thead><tr><th>Attention type</th><th>Removed</th><th>By importance</th><th>At random</th><th>Gap</th></tr></thead>
+        <tbody>
+          <tr><td>Encoder self</td><td class="dim">20%</td><td class="num">0.2512</td><td class="dim">0.2580</td><td class="neg">−0.0068</td></tr>
+          <tr><td>Encoder self</td><td class="dim">40%</td><td class="num">0.2528</td><td class="dim">0.2464</td><td class="num">+0.0064</td></tr>
+          <tr><td>Encoder self</td><td class="dim">60%</td><td class="num">0.2466</td><td class="dim">0.2062</td><td class="num">+0.0404</td></tr>
+          <tr><td>Decoder self</td><td class="dim">20%</td><td class="num">0.2454</td><td class="dim">0.2639</td><td class="neg">−0.0185</td></tr>
+          <tr><td>Decoder self</td><td class="dim">40%</td><td class="num">0.2509</td><td class="dim">0.2558</td><td class="neg">−0.0049</td></tr>
+          <tr><td>Decoder self</td><td class="dim">60%</td><td class="num">0.2445</td><td class="dim">0.2469</td><td class="neg">−0.0024</td></tr>
+          <tr><td>Cross</td><td class="dim">20%</td><td class="num">0.2564</td><td class="dim">0.2602</td><td class="neg">−0.0038</td></tr>
+          <tr><td>Cross</td><td class="dim">40%</td><td class="num">0.2508</td><td class="dim">0.1565</td><td class="num">+0.0943</td></tr>
+          <tr><td>Cross</td><td class="dim">60%</td><td class="num">0.2305</td><td class="dim">0.0323</td><td class="num">+0.1982</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p style="color:var(--text3);margin-top:1.25rem;font-size:.9rem;max-width:64ch">
+      Mean advantage of importance over random: <b style="color:var(--bad)">−0.0097</b> at
+      20%, <b style="color:var(--accent)">+0.0319</b> at 40%,
+      <b style="color:var(--accent)">+0.0787</b> at 60%. Decoder self-attention is robust to
+      pruning either way — it is the one place the ranking never pays off.
+    </p>
+  </div>
+</section>
+
+<section>
+  <div class="container">
+    <div class="sec-head reveal">
+      <div class="eyebrow">Output</div>
+      <h2>Where the important heads live</h2>
+    </div>
+    <div class="figs">
+      <figure class="reveal">
+        <img src="assets/01-head-importance.png" alt="Three heatmaps of head importance across six layers and eight heads, for encoder self-attention, decoder self-attention and cross-attention."/>
+        <figcaption><b>Head importance.</b> Layer by head, for each attention type. Importance
+          is far from uniform — the most important head matters roughly eight times as much as
+          the least within the same block, which is what makes ranked pruning possible at
+          all.</figcaption>
+      </figure>
+      <figure class="reveal">
+        <img src="assets/02-pruning-curves.png" alt="BLEU against percentage of heads removed, comparing importance-based and random selection for each attention type."/>
+        <figcaption><b>Pruning curves.</b> The two lines stay together until enough heads are
+          gone that the choice matters. For cross-attention they separate violently; for
+          decoder self-attention they never separate at all.</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<section class="sec-alt">
+  <div class="container">
+    <div class="sec-head reveal">
+      <div class="eyebrow">The extreme case</div>
+      <h2>Removing an entire attention type</h2>
+      <p>Each type fails in its own way, and the failure says what the type was for.</p>
+    </div>
+    <div class="table-wrap reveal">
+      <table>
+        <thead><tr><th>Removed</th><th>BLEU</th><th>What comes out</th></tr></thead>
+        <tbody>
+          <tr><td>Nothing</td><td class="num">0.2534</td><td class="quote">Ein Mann in einem orangen Hut, der auf etwas dreht.</td></tr>
+          <tr><td>Decoder self-attention</td><td class="dim">0.0256</td><td class="quote">Ein Mann in einem Mann in einem Mann in einem…</td></tr>
+          <tr><td>Encoder self-attention</td><td class="dim">0.0000</td><td class="quote">a.</td></tr>
+          <tr><td>Cross-attention</td><td class="dim">0.0000</td><td class="quote">a,,,,,,,,,,,,,, a,,, and to the a</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="notes reveal" style="margin-top:1.75rem">
+      <div class="note">
+        <h4>Read the failure modes</h4>
+        <p>Cross-attention is the only path from encoder to decoder — without it the decoder
+           cannot see the English sentence at all, and emits German-shaped noise. Decoder
+           self-attention fails more revealingly: the model still produces fluent fragments
+           but loses track of what it has already said, so it loops.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="container">
+    <div class="sec-head reveal">
+      <div class="eyebrow">Method</div>
+      <h2>How 144 heads get scored in 20 seconds</h2>
+    </div>
+    <p style="color:var(--text3);max-width:66ch">
+      The importance of a head is how much the loss would move if it were switched off.
+      Rather than removing 144 heads one at a time and re-running the model, take the
+      derivative of the loss with respect to the head's mask, sitting at 1:</p>
+    <span class="formula reveal">I_h = | ∂L / ∂ξ_h |     ξ = per-head mask, held at 1</span>
+    <p style="color:var(--text3);max-width:66ch">
+      That is a first-order estimate of the damage of setting ξ = 0, and it costs
+      <b style="color:var(--text2)">one forward and backward pass for all 144 heads</b>
+      instead of 144 separate evaluations.</p>
+
+    <div class="notes reveal" style="margin-top:1.75rem">
+      <div class="note">
+        <h4>Masking without library support</h4>
+        <p>Recent versions of <code>transformers</code> no longer accept <code>head_mask</code>
+           through <code>generate</code>. Instead a forward pre-hook on each attention module's
+           output projection reshapes its input to <code>(n_heads, d_kv)</code> and multiplies
+           by a per-head scalar. It works during generation, and because it is an ordinary
+           tensor multiply the mask stays differentiable — which is what makes the gradient
+           above computable in the first place.</p>
+      </div>
+      <div class="note">
+        <h4>Masked, not deleted</h4>
+        <p>Masking measures the effect of removal exactly; physically deleting the heads is
+           what would make the model smaller and faster. The BLEU numbers here are what that
+           smaller model would score.</p>
+      </div>
+      <div class="note">
+        <h4>BLEU written out</h4>
+        <p>Clipped n-gram precisions, geometric mean, brevity penalty, pooled at corpus level.
+           Sanity checks confirm identical text scores 1.0, that a truncated candidate is
+           caught by the brevity penalty, and a repetitive one by clipping.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="sec-alt">
+  <div class="container">
+    <div class="sec-head reveal">
+      <div class="eyebrow">Run it</div>
+      <h2>Quick start</h2>
+    </div>
+    <pre class="reveal">git clone https://github.com/rajneeshbabu/t5-head-pruning.git
+cd t5-head-pruning
+pip install -r requirements.txt
+jupyter notebook t5_head_pruning.ipynb</pre>
+    <p style="color:var(--text3);margin-top:1rem;font-size:.9rem">
+      Downloads t5-small (~240 MB) and the Multi30k test set on first run. About 15 minutes
+      on a laptop CPU, no GPU required.</p>
+
+    <div class="sec-head reveal" style="margin-top:3.25rem;">
+      <div class="eyebrow">The point</div>
+      <h2>Questions this is meant to survive</h2>
+    </div>
+    <ol class="qs reveal">
+      <li>Why the gradient with respect to a mask estimates the damage of removing that head, and where the first-order approximation breaks down.</li>
+      <li>Why this costs one backward pass instead of 144 forward passes.</li>
+      <li>What cross-attention does that self-attention cannot.</li>
+      <li>Why removing decoder self-attention makes the model repeat itself.</li>
+      <li>The difference between masking a head and deleting it.</li>
+      <li>Why random pruning is the control that makes the importance scores mean anything.</li>
+      <li>What BLEU's clipping and brevity penalty each prevent.</li>
+      <li>Why corpus-level BLEU is not the average of sentence-level BLEUs.</li>
+    </ol>
+  </div>
+</section>
+
+<footer>
+  <div class="container">
+    <div>Rajneesh Babu · M.Tech Computational and Data Sciences, Indian Institute of Science, Bengaluru</div>
+    <div class="foot-links">
+      <a href="t5_head_pruning.ipynb">Notebook</a>
+      <a href="README.md">README</a>
+      <a href="https://github.com/rajneeshbabu">GitHub</a>
+      <a href="https://rajneeshbabu.github.io">Portfolio</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+  (function () {
+    var items = document.querySelectorAll('.reveal');
+    if (!('IntersectionObserver' in window)) {
+      items.forEach(function (el) { el.classList.add('visible'); });
+      return;
+    }
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) { e.target.classList.add('visible'); io.unobserve(e.target); }
+      });
+    }, { threshold: 0.08, rootMargin: '0px 0px -40px 0px' });
+    items.forEach(function (el) { io.observe(el); });
+    setTimeout(function () {
+      items.forEach(function (el) {
+        if (el.getBoundingClientRect().top < window.innerHeight) el.classList.add('visible');
+      });
+    }, 60);
+  })();
+</script>
+<noscript><style>.reveal{opacity:1;transform:none;}</style></noscript>
+
+</body>
+</html>
